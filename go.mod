@@ -1,6 +1,6 @@
-module go-get
+module github.com/liuyuxuan0723/go-get
 
-go 1.22
+go 1.22.0
 
 require github.com/spf13/cobra v1.9.1
 
