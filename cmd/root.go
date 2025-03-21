@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"fmt"
 	"os"
 	"time"
 
@@ -8,11 +9,10 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func NewCommand(m *mod.Manager) *cobra.Command {
+func Root() *cobra.Command {
 	var (
-		debug   bool
+		verbose bool
 		timeout int
-		// batchSize int
 	)
 
 	root := &cobra.Command{
@@ -21,23 +21,32 @@ func NewCommand(m *mod.Manager) *cobra.Command {
 		Long:  `A tool that determines the latest version of a Go module compatible with your current Go version and runs 'go get' for you.`,
 		Args:  cobra.MinimumNArgs(1),
 		Run: func(cmd *cobra.Command, args []string) {
+			m := mod.NewManager(verbose)
 			module := args[0]
 
+			var timer *time.Timer
 			if timeout > 0 {
-				time.AfterFunc(time.Duration(timeout)*time.Second, func() {
+				timer = time.AfterFunc(time.Duration(timeout)*time.Second, func() {
+					fmt.Fprintf(os.Stderr, "Operation timed out after %d seconds\n", timeout)
 					os.Exit(1)
 				})
 			}
 
-			// 执行go get
-			if err := m.GoGet(module); err != nil {
+			err := m.GoGet(module)
+
+			if timer != nil {
+				timer.Stop()
+			}
+
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 				os.Exit(1)
 			}
 		},
 	}
 
-	root.Flags().BoolVarP(&debug, "debug", "d", false, "启用详细调试日志")
-	root.Flags().IntVarP(&timeout, "timeout", "t", 120, "设置全局超时时间(秒)，0表示无超时")
+	root.Flags().BoolVarP(&verbose, "verbose", "v", false, "Enable verbose logging")
+	root.Flags().IntVarP(&timeout, "timeout", "t", 60, "Set global timeout in seconds (0 means no timeout)")
 
 	return root
 }
