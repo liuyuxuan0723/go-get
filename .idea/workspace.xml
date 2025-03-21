@@ -6,6 +6,11 @@
   <component name="ChangeListManager">
     <list default="true" id="1b375ea9-dfea-4429-8f70-7e723dfdd535" name="更改" comment="">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/cmd/root.go" beforeDir="false" afterPath="$PROJECT_DIR$/cmd/root.go" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/go.mod" beforeDir="false" afterPath="$PROJECT_DIR$/go.mod" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/go.sum" beforeDir="false" afterPath="$PROJECT_DIR$/go.sum" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/main.go" beforeDir="false" afterPath="$PROJECT_DIR$/main.go" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/pkg/mod/interface.go" beforeDir="false" afterPath="$PROJECT_DIR$/pkg/mod/interface.go" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/pkg/mod/mod.go" beforeDir="false" afterPath="$PROJECT_DIR$/pkg/mod/mod.go" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
@@ -41,7 +46,7 @@
     "RunOnceActivity.go.migrated.go.modules.settings": "true",
     "RunOnceActivity.go.modules.go.list.on.any.changes.was.set": "true",
     "ask.go.tool.to.install.GoGolangCILintTaskConsumer": "true",
-    "git-widget-placeholder": "master",
+    "git-widget-placeholder": "feature/go-get",
     "go.import.settings.migrated": "true",
     "last_opened_file_path": "/Users/liuyuxuan/Documents/go-get",
     "node.js.detected.package.eslint": "true",
