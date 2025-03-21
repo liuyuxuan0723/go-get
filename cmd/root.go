@@ -8,7 +8,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func NewCommand(m *mod.Manager) *cobra.Command {
+func Root(m *mod.Manager) *cobra.Command {
 	var (
 		debug   bool
 		timeout int
