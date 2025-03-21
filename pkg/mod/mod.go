@@ -16,31 +16,34 @@ var (
 	GoCmdVersionPattern = regexp.MustCompile(`go(\d+\.\d+(\.\d+)?)`)
 )
 
-const MaxConcurrent = 10
+const MaxConcurrent = 20
 
-type VersionResult struct {
-	Version    string
-	GoVersion  string
-	Compatible bool
+type versionResult struct {
+	version    string
+	goVersion  string
+	compatible bool
 }
 
 type Manager struct {
 	modMap    map[string]map[string]string
 	cachePath string
 	verbose   bool
+	mutex     sync.Mutex
+	sem       chan struct{}
 }
 
 func NewManager(verbose bool) *Manager {
 	homeDir, err := os.UserHomeDir()
-	cachePath := filepath.Join(homeDir, ".gomod_cache.json")
+	cachePath := filepath.Join(homeDir, ".mod_cache.json")
 	if err != nil {
-		cachePath = ".gomod_cache.json"
+		cachePath = ".mod_cache.json"
 	}
 
 	return &Manager{
 		modMap:    make(map[string]map[string]string),
 		cachePath: cachePath,
 		verbose:   verbose,
+		sem:       make(chan struct{}, MaxConcurrent),
 	}
 }
 
@@ -80,13 +83,15 @@ func (m *Manager) GoVersion() (string, error) {
 	return "", fmt.Errorf("unable to parse Go version: %s", string(output))
 }
 
-func (m *Manager) GoGet(module string) error {
+func (m *Manager) GoGet(module string, refresh bool) error {
 	localGoVersion, err := m.GoVersion()
 	if err != nil {
 		return fmt.Errorf("failed to get local Go version: %w", err)
 	}
 
-	m.loadCache()
+	if err = m.loadCache(); err != nil {
+		return err
+	}
 
 	versions, err := listVersion(module, m.verbose)
 	if err != nil || len(versions) == 0 {
@@ -94,9 +99,18 @@ func (m *Manager) GoGet(module string) error {
 	}
 	m.logInfo("Module %s has %d available versions", module, len(versions))
 
-	compatibleVersion, err := m.findCompatibleVersion(module, versions, localGoVersion)
-	if err != nil {
-		return err
+	var compatibleVersion string
+	var findErr error
+
+	if refresh {
+		m.logInfo("Force refreshing cache for %s", module)
+		compatibleVersion, findErr = m.findCompatibleVersionRemote(module, versions, localGoVersion)
+	} else {
+		compatibleVersion, findErr = m.findCompatibleVersion(module, versions, localGoVersion)
+	}
+
+	if findErr != nil {
+		return findErr
 	}
 
 	m.logInfo("Executing: go get %s@%s", module, compatibleVersion)
@@ -119,58 +133,65 @@ func (m *Manager) findCompatibleVersion(module string, versions []string, localG
 
 	m.logDebug("No compatible version found in cache, checking remotely")
 
-	if _, exists := m.modMap[module]; !exists {
-		m.modMap[module] = make(map[string]string)
+	m.mutex.Lock()
+	if _, exists := m.modMap[localGoVersion]; !exists {
+		m.modMap[localGoVersion] = make(map[string]string)
 	}
+	m.mutex.Unlock()
 
-	resultMap := make(map[string]VersionResult)
-	resultChan := make(chan VersionResult, len(versions))
-
+	resultChan := make(chan versionResult, len(versions))
 	var wg sync.WaitGroup
-	sem := make(chan struct{}, MaxConcurrent)
 
 	for i := len(versions) - 1; i >= 0; i-- {
+		version := versions[i]
 		wg.Add(1)
-		go func(version string) {
+		go func(ver string) {
 			defer wg.Done()
 
-			sem <- struct{}{}
-			defer func() { <-sem }()
+			m.sem <- struct{}{}
+			defer func() { <-m.sem }()
 
-			goVer, err := getModuleGoVersion(module, version, m.verbose)
+			goVer, err := getModuleGoVersion(module, ver, m.verbose)
 			if err != nil {
-				m.logDebug("Failed to get Go requirement for version %s: %v", version, err)
-				resultChan <- VersionResult{Version: version, GoVersion: "", Compatible: false}
+				m.logDebug("Failed to get Go requirement for version %s: %v", ver, err)
+				resultChan <- versionResult{version: ver, compatible: false}
 				return
 			}
 
-			m.modMap[module][version] = goVer
 			compatible := goVer == "" || compareGoVersions(localGoVersion, "go"+goVer)
 
 			if compatible {
-				m.logDebug("Found compatible version: %s (Go requirement: %s)", version, goVer)
+				m.logDebug("Found compatible version: %s (Go requirement: %s)", ver, goVer)
 			}
 
-			resultChan <- VersionResult{Version: version, GoVersion: goVer, Compatible: compatible}
-		}(versions[i])
+			resultChan <- versionResult{version: ver, goVersion: goVer, compatible: compatible}
+		}(version)
 	}
 
-	go func() {
-		wg.Wait()
-		close(resultChan)
-	}()
+	wg.Wait()
+	close(resultChan)
 
+	compatibleVersions := make(map[string]bool)
 	for result := range resultChan {
-		resultMap[result.Version] = result
+		if result.compatible {
+			compatibleVersions[result.version] = true
+		}
 	}
 
-	m.saveCache()
-
+	var selectedVersion string
 	for i := len(versions) - 1; i >= 0; i-- {
 		v := versions[i]
-		if result, ok := resultMap[v]; ok && result.Compatible {
-			m.logDebug("Selected latest compatible version: %s (Go requirement: %s)", v, result.GoVersion)
-			return v, nil
+		if compatibleVersions[v] {
+			selectedVersion = v
+			m.logDebug("Selected latest compatible version: %s", v)
+
+			m.modMap[localGoVersion][module] = selectedVersion
+
+			if err := m.saveCache(); err != nil {
+				m.logDebug("Failed to save cache: %v", err)
+			}
+
+			return selectedVersion, nil
 		}
 	}
 
@@ -178,31 +199,107 @@ func (m *Manager) findCompatibleVersion(module string, versions []string, localG
 }
 
 func (m *Manager) findCompatibleVersionFromCache(module string, versions []string, localGoVersion string) string {
-	versionMap, exists := m.modMap[module]
+	m.mutex.Lock()
+	goVersionMap, exists := m.modMap[localGoVersion]
+	m.mutex.Unlock()
+
 	if !exists {
 		return ""
 	}
 
 	m.logDebug("Getting module info from cache")
 
-	for i := len(versions) - 1; i >= 0; i-- {
-		v := versions[i]
-		if goVer, ok := versionMap[v]; ok {
-			if goVer == "" || compareGoVersions(localGoVersion, "go"+goVer) {
-				m.logDebug("Found compatible version in cache: %s (Go requirement: %s)", v, goVer)
-				return v
-			}
+	m.mutex.Lock()
+	cachedVersion, exists := goVersionMap[module]
+	m.mutex.Unlock()
+
+	if !exists {
+		return ""
+	}
+
+	for _, v := range versions {
+		if v == cachedVersion {
+			m.logDebug("Found compatible version in cache: %s", cachedVersion)
+			return cachedVersion
 		}
 	}
 
 	return ""
 }
 
+func (m *Manager) findCompatibleVersionRemote(module string, versions []string, localGoVersion string) (string, error) {
+	m.logDebug("Skipping cache, checking remotely for latest versions")
+
+	m.mutex.Lock()
+	if _, exists := m.modMap[localGoVersion]; !exists {
+		m.modMap[localGoVersion] = make(map[string]string)
+	}
+	m.mutex.Unlock()
+
+	resultChan := make(chan versionResult, len(versions))
+	var wg sync.WaitGroup
+
+	for i := len(versions) - 1; i >= 0; i-- {
+		version := versions[i]
+		wg.Add(1)
+		go func(ver string) {
+			defer wg.Done()
+
+			m.sem <- struct{}{}
+			defer func() { <-m.sem }()
+
+			goVer, err := getModuleGoVersion(module, ver, m.verbose)
+			if err != nil {
+				m.logDebug("Failed to get Go requirement for version %s: %v", ver, err)
+				resultChan <- versionResult{version: ver, compatible: false}
+				return
+			}
+
+			compatible := goVer == "" || compareGoVersions(localGoVersion, "go"+goVer)
+
+			if compatible {
+				m.logDebug("Found compatible version: %s (Go requirement: %s)", ver, goVer)
+			}
+
+			resultChan <- versionResult{version: ver, goVersion: goVer, compatible: compatible}
+		}(version)
+	}
+
+	wg.Wait()
+	close(resultChan)
+
+	compatibleVersions := make(map[string]bool)
+	for result := range resultChan {
+		if result.compatible {
+			compatibleVersions[result.version] = true
+		}
+	}
+
+	var selectedVersion string
+	for i := len(versions) - 1; i >= 0; i-- {
+		v := versions[i]
+		if compatibleVersions[v] {
+			selectedVersion = v
+			m.logDebug("Selected latest compatible version: %s", v)
+
+			m.modMap[localGoVersion][module] = selectedVersion
+
+			if err := m.saveCache(); err != nil {
+				m.logDebug("Failed to save cache: %v", err)
+			}
+
+			return selectedVersion, nil
+		}
+	}
+
+	return "", fmt.Errorf("no compatible version found for %s with Go %s", module, localGoVersion)
+}
+
 func (m *Manager) GoModTidy() error {
 	return nil
 }
 
-func (m *Manager) loadCache() {
+func (m *Manager) loadCache() error {
 	m.logDebug("Loading cache: %s", m.cachePath)
 	m.modMap = make(map[string]map[string]string)
 
@@ -210,18 +307,19 @@ func (m *Manager) loadCache() {
 	if err != nil {
 		m.logDebug("Failed to read cache file: %v, creating new cache", err)
 		emptyCache, _ := json.MarshalIndent(m.modMap, "", "  ")
-		os.WriteFile(m.cachePath, emptyCache, 0644)
-		return
+
+		return os.WriteFile(m.cachePath, emptyCache, 0644)
 	}
 
 	if err = json.Unmarshal(data, &m.modMap); err != nil {
 		m.logDebug("Failed to parse cache: %v, resetting cache", err)
 		m.modMap = make(map[string]map[string]string)
 		emptyCache, _ := json.MarshalIndent(m.modMap, "", "  ")
-		os.WriteFile(m.cachePath, emptyCache, 0644)
+		return os.WriteFile(m.cachePath, emptyCache, 0644)
 	} else {
 		m.logDebug("Successfully loaded cache with %d modules", len(m.modMap))
 	}
+	return nil
 }
 
 func (m *Manager) saveCache() error {
