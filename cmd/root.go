@@ -13,13 +13,32 @@ func Root() *cobra.Command {
 	var (
 		verbose bool
 		timeout int
+		refresh bool
 	)
 
 	root := &cobra.Command{
 		Use:   "go-get [module]",
 		Short: "Automatically get the latest compatible version of a Go module",
-		Long:  `A tool that determines the latest version of a Go module compatible with your current Go version and runs 'go get' for you.`,
-		Args:  cobra.MinimumNArgs(1),
+		Long: `A tool that determines the latest version of a Go module compatible with your current Go version and runs 'go get' for you.
+
+go-get will automatically:
+- Detect your local Go version
+- Find all available versions of the requested module
+- Filter out pre-release and incompatible versions
+- Select the latest version compatible with your Go version
+- Run 'go get' with the selected version
+
+This ensures you always get the most recent version that will actually work with your Go installation.
+`,
+		Example: `  # Get the latest compatible version of a module
+  go-get github.com/gin-gonic/gin
+
+  # Force refresh the cache for the latest information
+  go-get -r github.com/gin-gonic/gin
+
+  # Enable verbose logging to see detailed progress
+  go-get -v github.com/gin-gonic/gin`,
+		Args: cobra.MinimumNArgs(1),
 		Run: func(cmd *cobra.Command, args []string) {
 			m := mod.NewManager(verbose)
 			module := args[0]
@@ -32,7 +51,7 @@ func Root() *cobra.Command {
 				})
 			}
 
-			err := m.GoGet(module)
+			err := m.GoGet(module, refresh)
 
 			if timer != nil {
 				timer.Stop()
@@ -45,8 +64,9 @@ func Root() *cobra.Command {
 		},
 	}
 
-	root.Flags().BoolVarP(&verbose, "verbose", "v", false, "Enable verbose logging")
+	root.Flags().BoolVarP(&verbose, "verbose", "v", false, "Enable verbose logging to show detailed progress")
 	root.Flags().IntVarP(&timeout, "timeout", "t", 60, "Set global timeout in seconds (0 means no timeout)")
+	root.Flags().BoolVarP(&refresh, "refresh", "r", false, "Force refresh cache and fetch the latest module information")
 
 	return root
 }
